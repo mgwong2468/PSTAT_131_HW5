@@ -1,0 +1,134 @@
+---
+title: "Homework 5"
+author: "Mason Wong"
+date: "2022-11-19"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Exercise 1
+
+```{r}
+library(janitor)
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(glmnet)
+library(tune)
+library(tidymodels)
+
+pokemon <- read.csv("Pokemon.csv")
+set.seed(100)
+
+pokemon_clean <- pokemon %>% 
+  clean_names()
+```
+
+clean_names() made all of the column names lowercase and turned any empty spaces or periods into underscores
+
+This is useful because it helps to make our variable names uniform and prevent us from forgetting if we have capital letters in our variables when we are processing a long chunk of code
+
+# Exercise 2
+
+```{r}
+ggplot(data=pokemon_clean, aes(type_1)) + geom_bar()
+```
+There are 18 possible types for Type 1, with the fewest types being Flying and Fairy
+
+```{r}
+pokemon_filter <- pokemon_clean %>%
+  filter(type_1 == "Bug"|type_1 == "Fire"|type_1 == "Grass"|type_1 == "Normal"|type_1 == "Water"|type_1 == "Psychic")
+
+pokemon_filter$type_1 <- as.factor(pokemon_filter$type_1)
+pokemon_filter$legendary <- as.factor(pokemon_filter$legendary)
+pokemon_filter$generation <- as.factor(pokemon_filter$generation)
+```
+
+# Exercise 3
+
+```{r}
+pokemon_split <- initial_split(pokemon_filter, prop = 0.7, strata = type_1)
+
+pokemon_train <- training(pokemon_split)
+
+pokemon_test <- testing(pokemon_split)
+
+poke_fold <- vfold_cv(pokemon_train, v=5, strata = type_1)
+```
+
+Stratifying is useful because it ensures that the data is evenly distributed and we don't have large variances between our data.
+
+# Exercise 4
+
+```{r}
+pokemon_recipe <- recipe(type_1 ~ legendary + generation + sp_atk + attack + speed + defense + 
+                           hp + sp_def, data = pokemon_train) %>%
+  step_dummy(legendary)
+
+pokemon_recipe <- step_dummy(recipe = pokemon_recipe, generation)
+
+pokemon_recipe <- step_center(recipe = pokemon_recipe, sp_atk, attack, speed, defense, hp, sp_def)
+
+pokemon_recipe <- step_scale(recipe = pokemon_recipe, sp_atk, attack, speed, defense, hp, sp_def)
+```
+
+# Exercise 5
+
+```{r}
+pokemon_multi <- multinom_reg() %>%
+  set_engine("glmnet")
+
+pokemon_wrkflw <- workflow() %>%
+  add_model(pokemon_multi %>% set_args(mixture = tune(), penalty = tune())) %>%
+  add_recipe(pokemon_recipe)
+
+comb_grid <- grid_regular(penalty(range = c(-5,5)),mixture(range = c(0,1)), levels = c(penalty=10, mixture=10))
+comb_grid
+```
+We will be fitting 100 models for each fold in our v fold, thus we are fitting 500 models.
+
+# Exercise 6
+
+```{r}
+pokemon_mr <- tune_grid(
+  pokemon_wrkflw,
+  resamples = poke_fold,
+  grid = comb_grid
+)
+
+autoplot(pokemon_mr)
+```
+It seems smaller values of penalty and mixture produce more accurate results
+
+# Exercise 7
+
+```{r warning=FALSE}
+best_model <- select_best(pokemon_mr)
+
+pokemon_final <- finalize_workflow(pokemon_wrkflw, best_model)
+
+pokemon_fit <- fit(pokemon_final, data = pokemon_train)
+
+augment(pokemon_fit, new_data = pokemon_test) %>%
+  accuracy(truth = type_1, estimate = .pred_class)
+```
+
+
+# Exercise 8
+
+```{r}
+augment(pokemon_fit, new_data= pokemon_test) %>%
+  roc_auc(truth = type_1, .pred_Bug:.pred_Water)
+
+augment(pokemon_fit, new_data= pokemon_test) %>%
+  roc_curve(truth = type_1, .pred_Bug:.pred_Water) %>%
+  autoplot()
+
+augment(pokemon_fit, new_data = pokemon_test) %>%
+  conf_mat(truth = type_1, estimate = .pred_class) %>% 
+  autoplot(type = "heatmap")
+```
+The model was okay, it was really good at predicting Water and Normal types, but really bad at predicting Grass and fire types. I believe this is related to the slight skew that my model seems to have towards the water type in terms of the predicted values. I think this is the case because Normal and Water make up a majority of the pokemon that we were given in the data set. This would mean that our model has the most experience predicting water and normal types so it would be more likely to predict a water or normal type due to the bias in our data. This means that the best model that we have selected has the most experience predicting types based around water and normal, so there is a slight bias in the model's predictions.
